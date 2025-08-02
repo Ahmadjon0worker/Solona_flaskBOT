@@ -1,0 +1,5 @@
+flask
+pynacl
+requests
+base58
+gunicorn
