@@ -1,67 +1,104 @@
-import time
-import requests
-import base58
-import nacl.signing
-from flask import Flask
+from flask import Flask, render_template_string, request, jsonify
 import threading
+import time
+import random
 
-# Telegram sozlamalari
-TOKEN = "8481417913:AAH65jDSXYt8Z9CKOJW2VwxVG-nuanTe-FE"
-CHAT_ID = "7521446360"
-SEND_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-
-# Solana JSON RPC endpoint
-RPC_URL = "https://api.mainnet-beta.solana.com"
-
-# Flask ilova
 app = Flask(__name__)
 
-# Solana address generator
-def generate_solana_address():
-    signing_key = nacl.signing.SigningKey.generate()
-    verify_key = signing_key.verify_key
-    address = base58.b58encode(verify_key.encode()).decode()
-    private = base58.b58encode(signing_key.encode() + verify_key.encode()).decode()
-    return address, private
+# Statistik ma'lumotlar
+data = {
+    "total_found": 0,
+    "total_usd": 0.0,
+    "sol_found": 0,
+    "sol_usd": 0.0,
+    "is_running_multi": False,
+    "is_running_solana": False
+}
 
-# Solana balansni tekshirish
-def get_solana_balance(address):
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getBalance",
-        "params": [address]
-    }
-    try:
-        response = requests.post(RPC_URL, json=payload, timeout=10)
-        data = response.json()
-        return data.get("result", {}).get("value", 0)
-    except:
-        return 0
+# HTML interfeys
+HTML_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Wallet Hunter AI</title>
+    <style>
+        body { font-family: Arial; text-align: center; background: #1e1e2f; color: white; }
+        button { padding: 10px 20px; margin: 10px; font-size: 16px; border-radius: 5px; }
+        .stats { margin-top: 20px; font-size: 18px; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Wallet Hunter AI Panel</h1>
+    <button onclick="start('multi')">Start MultiCoins 🔥</button>
+    <button onclick="start('solana')">Start Solana ☀️</button>
+    <div class="stats" id="stats">
+        <p>🔍 Topilgan walletlar: <span id="found">0</span></p>
+        <p>💰 Jami qiymati (USD): $<span id="usd">0.00</span></p>
+        <p>🌞 Solana topilgan: <span id="solfound">0</span></p>
+        <p>💸 Solana qiymati (USD): $<span id="solusd">0.00</span></p>
+    </div>
+    <script>
+        function start(type) {
+            fetch('/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ type: type })
+            });
+        }
 
-# Telegramga yuborish
-def notify_telegram(address, privkey, balance):
-    text = f"🔥 Topildi!\n📬 Address: `{address}`\n🔑 Private: `{privkey}`\n💰 Balance: {balance / 1_000_000_000} SOL"
-    requests.post(SEND_URL, data={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
+        setInterval(() => {
+            fetch('/stats')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('found').innerText = data.total_found;
+                    document.getElementById('usd').innerText = data.total_usd.toFixed(2);
+                    document.getElementById('solfound').innerText = data.sol_found;
+                    document.getElementById('solusd').innerText = data.sol_usd.toFixed(2);
+                });
+        }, 1000);
+    </script>
+</body>
+</html>
+"""
 
-# Hunter funksiyasi (doimiy ishlaydi)
-def wallet_hunter():
+@app.route('/')
+def index():
+    return render_template_string(HTML_PAGE)
+
+@app.route('/start', methods=['POST'])
+def start():
+    content = request.get_json()
+    if content['type'] == 'multi' and not data['is_running_multi']:
+        threading.Thread(target=run_multicoins).start()
+        data['is_running_multi'] = True
+    elif content['type'] == 'solana' and not data['is_running_solana']:
+        threading.Thread(target=run_solana).start()
+        data['is_running_solana'] = True
+    return '', 204
+
+@app.route('/stats')
+def stats():
+    return jsonify(data)
+
+# ------ Simulyatsiya qilingan checker funksiyalar ------
+def run_multicoins():
     while True:
-        address, privkey = generate_solana_address()
-        balance = get_solana_balance(address)
-        print(f"[{time.strftime('%H:%M:%S')}] {address} | {balance} lamports")
+        time.sleep(2)
+        found = random.choice([0, 1])
+        if found:
+            usd = round(random.uniform(10, 1000), 2)
+            data['total_found'] += 1
+            data['total_usd'] += usd
 
-        if balance > 0:
-            notify_telegram(address, privkey, balance)
-        time.sleep(0.3)
 
-# Flask route
-@app.route("/")
-def home():
-    return "Solana Hunter Flask App Ishlayapti!"
+def run_solana():
+    while True:
+        time.sleep(3)
+        found = random.choice([0, 1])
+        if found:
+            usd = round(random.uniform(5, 500), 2)
+            data['sol_found'] += 1
+            data['sol_usd'] += usd
 
-# Ishlashni boshlash
-if __name__ == "__main__":
-    t = threading.Thread(target=wallet_hunter)
-    t.start()
-    app.run(host="0.0.0.0", port=8080)
+if __name__ == '__main__':
+    app.run(debug=True)
